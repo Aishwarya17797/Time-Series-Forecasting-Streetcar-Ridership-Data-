@@ -1,0 +1,999 @@
+---
+title: "Final Project"
+author: "Aishwarya Jawalkar"
+format: 
+  html:
+    self-contained: true
+editor: visual
+warning: false
+code-fold: true
+---
+
+```{r}
+library(fpp3)
+library(ggplot2)
+library(here)
+library(tsibble)
+library(knitr)
+library(fable)
+library(fable.prophet)
+library(feasts)
+library(slider)
+library(fable.prophet)
+library(data.table)
+```
+
+# Section 1
+
+## Introduction
+
+The provided dataset represents streetcar ridership over time, with two columns: "date" and "ridership." The data spans from September 2016, to January 2024. The source of the dataset is [Cincinnati Open Data](https://data.cincinnati-oh.gov/Efficient-Service-Delivery/Streetcar-Ridership/wkbu-npen/about_data), and it is published on their platform.
+
+The "ridership" variable indicates the number of streetcar riders on each corresponding date. Potential factors influencing the variation in ridership could include day of the week, weather conditions, special events, public holidays, or other external factors. For example, weekends or holidays might witness higher or lower ridership, and adverse weather conditions could impact the number of people using the streetcar.
+
+Forecasting streetcar ridership may be challenging due to the influence of various external factors. Accurate predictions may require considering additional datasets, such as weather data, event calendars, or public holiday schedules. Additionally, seasonality and trends in ridership patterns over time could contribute to the complexity of forecasting this variable. Implementing advanced time series forecasting models, incorporating external factors, and analyzing historical patterns could enhance the accuracy of predictions for streetcar ridership.
+
+The impact of the COVID-19 pandemic necessitates careful consideration. Therefore, this analysis will incorporate data beyond 2020 or a more nuanced understanding of historical and current trends, ultimately leading to more accurate forecasting models for future streetcar ridership.
+
+```{r}
+filepath <- here("Data","Streetcar_Ridership_20240205.csv")
+rd_data <- readr::read_csv(filepath)
+
+rd_tbl <- rd_data %>%
+  mutate(date = parse_date_time(date, orders = c("mdy HMSz", "mdy HMsz"))) %>%
+  mutate(date = as_date(date)) 
+
+rd_tsbl <- rd_tbl %>%
+  group_by(date) %>%
+  summarise(ridership = sum(ridership)) %>%
+  mutate(date = yearweek(date)) %>%
+  filter(year(date) >= 2021) %>%
+  group_by(date) %>%
+  summarise(ridership = sum(ridership)) %>%
+  as_tsibble(index = date)
+
+rd_tsbl
+```
+
+## Summary Statistics
+
+-   In this section, we present a comprehensive overview of the summary statistics derived from our Streetcar ridership data, shedding light on its central tendencies, dispersion, and distribution.
+
+-   Through measures such as mean, median, standard deviation, and more, we aim to provide a nuanced understanding of the data's characteristics.
+
+```{r}
+summary(rd_tbl)
+```
+
+-   The ridership data covers a period from 2016-09-10 to 2024-01-30. The data covers almost 7 and a half years.
+
+-   This suggests that there might be seasonality in the ridership data. For example, ridership might be higher in the summer months than in the winter months. It would be interesting to explore this further by plotting the ridership data over time.
+
+The ridership data has a mean of 1187.27, a standard deviation of 2554.02, a minimum of 0.0, and a maximum of 6388.0. This suggests that the ridership data is highly variable, with a few extreme values. The median of 147.8 is a better indicator of the typical ridership than the mean.
+
+```{r}
+par(mfrow=c(1,2))
+hist(rd_tsbl$ridership, xlab="Streetcar Riders", main = "")
+boxplot(rd_tsbl$ridership, horizontal = TRUE, xlab = "Streetcar Riders")
+```
+
+The fact that the ridership data has a high standard deviation suggests that there is a lot of variability in the ridership, which could be due to seasonality or other factors. The distribution of the timeseries apears to be slightly right skewed. We will find about it in the below sections.
+
+**Density Plot**
+
+```{r}
+density_plot <- ggplot(rd_tsbl, aes(x = ridership)) +
+  geom_density(fill = "skyblue", color = "black") +
+  labs(title = "Density Plot of Ridership",
+       x = "Ridership",
+       y = "Density") +
+  theme_minimal()
+print(density_plot)
+```
+
+## Time series Plot
+
+```{r}
+line_chart <- ggplot(rd_tsbl, aes(x = date, y = ridership)) +
+  geom_line() +
+  labs(title = "Ridership Over Time",
+       x = "Date",
+       y = "Ridership") +
+  theme_minimal()
+print(line_chart)
+```
+
+-   The timeseries shows ridership over time, with ridership increasing significantly from 2020 to 2024.
+
+-   Ridership appears to be seasonal, with higher ridership in the summer months.
+
+## Visualizing Moving Averages
+
+```{r}
+cons_sent_ma <- rd_tsbl %>%
+  arrange(date) %>%
+  mutate(
+    ma_right = slider::slide_dbl(ridership, mean, .before = 12, .after = 0, .complete = TRUE),
+    ma_left = slider::slide_dbl(ridership, mean, .before = 0, .after = 12, .complete = TRUE),
+    ma_center = slider::slide_dbl(ridership, mean, .before = 6, .after = 6, .complete = TRUE),
+    ma_3 = slider::slide_dbl(ridership, mean, .before = 1, .after = 1, .complete = TRUE),
+    ma_5 = slider::slide_dbl(ridership, mean, .before = 2, .after = 2, .complete = TRUE),
+    ma_7 = slider::slide_dbl(ridership, mean, .before = 3, .after = 3, .complete = TRUE),
+    ma_13 = slider::slide_dbl(ridership, mean, .before = 6, .after = 6, .complete = TRUE),
+    ma_25 = slider::slide_dbl(ridership, mean, .before = 12, .after = 12, .complete = TRUE),
+    ma_49 = slider::slide_dbl(ridership, mean, .before = 24, .after = 24, .complete = TRUE)
+  )
+
+cons_sent_ma_pivot <- cons_sent_ma %>%
+  pivot_longer(
+    cols = ma_right:ma_49,
+    values_to = "value_ma",
+    names_to = "ma_order"
+  ) %>%
+  mutate(ma_order = factor(
+    ma_order,
+    levels = c(
+      "ma_center",
+      "ma_left",
+      "ma_right",
+      "ma_3",
+      "ma_5",
+      "ma_7",
+      "ma_13",
+      "ma_25",
+      "ma_49"
+    ),
+    labels = c(
+      "ma_center",
+      "ma_left",
+      "ma_right",
+      "ma_3",
+      "ma_5",
+      "ma_7",
+      "ma_13",
+      "ma_25",
+      "ma_49"
+    )
+  ))
+
+# Visualizing the time series, moving average, and remainder
+library(ggplot2)
+cons_sent_ma %>%
+  ggplot() +
+  geom_line(aes(date, ridership), size = 1) +
+  geom_line(aes(date, ma_13), size = 1, color = "red") +
+  geom_smooth(aes(date, ridership), method = "lm", se = FALSE, color = "blue") +
+  theme_bw() +
+  ylab('Ridership') +
+  ggtitle('Moving Averages of Ridership Variable')
+```
+
+```{r}
+cons_sent_ma_pivot %>%
+  filter(
+    !ma_order %in% c(
+      "ma_center",
+      "ma_left",
+      "ma_right",
+      "ma_7",
+      "ma_49"
+    )
+  ) %>%
+  mutate(ma_order = case_when(
+    ma_order == 'ma_3' ~ '3rd Order',
+    ma_order == 'ma_5' ~ '5th Order',
+    ma_order == 'ma_13' ~ '13th Order',
+    ma_order == 'ma_25' ~ '25th Order'
+  )) %>%
+  mutate(
+    ma_order = factor(
+      ma_order,
+      labels = c('3rd Order',
+                 '5th Order',
+                 '13th Order',
+                 '25th Order'),
+      levels = c('3rd Order',
+                 '5th Order',
+                 '13th Order',
+                 '25th Order')
+    )
+  ) %>%
+  ggplot() +
+  geom_line(aes(as.Date(date), ridership), size = 1) +
+  geom_line(aes(as.Date(date), value_ma, color = ma_order), size = 1) +
+  scale_color_discrete(name = 'MA Order') +
+  theme_bw() +
+  labs(
+    title = "Estimating Moving Average of Ridership Over Orders",
+    x = "Date",
+    y = "Ridership"
+  )
+
+```
+
+3rd order Moving Average seems to be over fitting. 5th order Moving average seems to be a better fit. So for further analysis we will consider 5th Order Moving Average itself.
+
+**MA Estimate**
+
+```{r}
+cons_sent_ma_pivot %>%
+  filter(
+    ma_order == 'ma_5'
+  ) %>%
+  mutate(ma_order = case_when(
+    ma_order == 'ma_5' ~ '5th Order'
+  )) %>%
+  ggplot() +
+  geom_line(aes(as.Date(date), ridership), size = 1) +
+  geom_line(aes(as.Date(date), value_ma, color = ma_order), size = 1) +
+  scale_color_discrete(name = 'MA Order') +
+  theme_bw() +
+  labs(
+    title = "Estimating Moving Average of Ridership Over Orders",
+    x = "Date",
+    y = "Ridership"
+  )
+
+```
+
+## Decomposition
+
+**Remainder Series of Ridership**
+
+```{r}
+rd_tsbl_ma <- rd_tsbl %>%
+  arrange(date) %>%
+  mutate(
+    ma_5 = slider::slide_dbl(ridership, mean, .before = 2, .after = 2, .complete = TRUE)
+  )
+
+# Calculate remainder series
+rd_tsbl_ma_remainder <- rd_tsbl_ma %>%
+  mutate(remainder = ridership - ma_5)
+
+# Plot the remainder series with fixed y-axis
+ggplot(rd_tsbl_ma_remainder, aes(x = as.Date(date), y = remainder)) +
+  geom_line(color = "green", size = 1) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +  #
+  theme_bw() +
+  labs(
+    title = "Remainder Series of Ridership",
+    x = "Date",
+    y = "Remainder"
+  )
+
+```
+
+The remainder series suggests that there is more complexity in the ridership data than can be captured by a simple moving average. While the moving average is useful for smoothing out the data and identifying trends, it may mask some of the underlying patterns and relationships in the data.
+
+**Component**
+
+```{r}
+rd_decomp <- rd_tsbl %>%
+  mutate(
+    ma_center = slider::slide_dbl(ridership, mean,
+                .before = 2, .after = 2, .complete = TRUE),
+  ) %>%
+  mutate(resid = ridership - ma_center) %>%
+  dplyr::select(date, ridership, ma_center, resid) %>%
+  mutate(date = as.Date(date)) %>% # Convert date column to Date class
+  pivot_longer(
+    ridership:resid,
+    names_to = "decomposition",
+    values_to = "ridership"
+  ) %>%
+  mutate(
+    decomposition = case_when(
+      decomposition == "ridership" ~ "Ridership Count",
+      decomposition == "ma_center" ~ "Trend",
+      decomposition == "resid" ~ "Remainder"
+    )
+  ) %>%
+  mutate(
+    decomposition = factor(
+      decomposition,
+      labels = c(
+        "Ridership Count",
+        "Trend",
+        "Remainder"
+      ),
+      levels = c(
+        "Ridership Count",
+        "Trend",
+        "Remainder"
+      )
+    )
+  ) 
+rd_decomp %>%
+  ggplot() +
+  geom_line(aes(date, ridership), size = 1) +
+  facet_wrap(
+    ~decomposition,
+    nrow = 3,
+    scales = "free"
+  ) +
+  theme_bw() +
+  ylab("") +
+  xlab("Month") +
+  ggtitle(
+    "Ridership Count = Trend + Remainder"
+  ) +
+  scale_x_date(labels = scales::date_format("%b %Y"), date_breaks = "5 months")
+
+```
+
+There are patterns in the Remainders which suggests that there is some seasonality that is not being captured by other components. We'll see the Decomposition of the time series to identify the seasonality more clearly.
+
+**Classical Decomposition**
+
+```{r}
+rd_tsbl %>%
+  model(
+    classical_decomposition(ridership)
+  ) %>%
+  components() %>%
+  autoplot()
+```
+
+A clear yearly seasonality is seen here. The remainder seems to be white noise. To see if any correlation is left in the residuals we'll see the lag plot.
+
+```{r}
+rd_tsbl %>%
+  model(
+    classical_decomposition(ridership,'additive')
+  ) %>%
+  components() %>%
+  gg_lag(random, geom = "point", lags = 1:4)+
+  geom_smooth(aes(color=NULL),method='lm',color='black',se=F)
+```
+
+There is no correlation, the time series has additive seasonality.
+
+**Splitting the dataset in train and test**
+
+```{r}
+split_index <- floor(0.8 * nrow(rd_tsbl))
+ 
+# Select the first 80% of the data
+rd_train <- rd_tsbl[1:split_index, ]
+rd_test <- rd_tsbl[(split_index + 1):nrow(rd_tsbl),]
+
+```
+
+# Section 2
+
+## Assessment of whether data are variance/mean stationary.
+
+```{r}
+#Rolling average method to check whether the timeseries is mean stationary. 
+
+rd_roll <- rd_train %>%
+  mutate(
+    ridership_mean = slide_dbl(
+      ridership, 
+      mean,
+      .before=12,
+      .after=12,
+      .complete=TRUE),
+    ridership_sd = slide_dbl(
+      ridership, 
+      sd,
+      .before=12,
+      .after=12)
+  )
+
+rd_rollmean <- rd_roll %>%
+  ggplot() +
+    geom_line(aes(date, ridership)) +
+  geom_line(aes(date, ridership_mean),color='blue') +
+  theme_bw() +
+  ggtitle("The number of streetcar riders Mean over Time") +
+  ylab("Streetcar Riders") +
+  xlab("Date")
+
+rd_rollmean
+```
+
+From this graph it is visible that the timeseries is not mean stationary.
+
+**Rolling SD method to check whether the timeseries is variance stationary.**
+
+```{r}
+rd_rollsd <- rd_roll %>%
+  ggplot() +
+  geom_line(aes(date, ridership_sd)) +
+  geom_smooth(aes(date,ridership_sd),method='lm',se=F)+
+  theme_bw() +
+  ggtitle("Streetcar riders Standard Deviation over Time") +
+  ylab("Streetcar riders") +
+  xlab("Date")
+
+rd_rollsd
+```
+
+This graph is clearly showing upward trend and telling that the timeseries is not variance stationary. To induce variance stationarity in the timeseries there are two approaches.
+
+## Transformation of Data
+
+To make a series variance stationary we will perform 2 types of transformations:
+
+1.  Log Transformation
+2.  Box-Cox Transformation
+
+**Log Transformation**
+
+```{r}
+library(ggtext)
+lambda = rd_train %>%
+  as_tsibble() %>%
+  features(ridership, features = guerrero) %>%
+  pull(lambda_guerrero)
+
+rd_trans <- rd_train %>%
+  mutate(ridership_log = log1p(ridership)) %>%
+  mutate(ridership_boxcox = box_cox(ridership,lambda))
+
+rd_trans %>%
+  ggplot() +
+  geom_line(aes(date, ridership_log)) +
+  theme_bw() +
+  labs(title = "Streetcar Riders over Time(Log)",
+       x = "Date",
+       y = "Transformed Ridership") +
+  theme(plot.title = ggtext::element_markdown())
+```
+
+**Box-Cox Transformation**
+
+```{r}
+rd_trans %>%
+  ggplot() +
+  geom_line(aes(date, ridership_boxcox),color='blue') +
+  theme_bw() +
+  labs(title = "Streetcar Riders over Time(<span style='color:blue'>Box-Cox</span>)",
+       x = "Date",
+       y = "Transformed Ridership") +
+  theme(plot.title = ggtext::element_markdown())
+```
+
+**Rolling SD of Log transformed timeseries**
+
+```{r}
+rd_log_roll <- rd_trans %>%
+  mutate(log_ridership_sd = slide_dbl(
+      ridership_log, 
+      sd,
+      .before=12,
+      .after=12)
+  )
+
+rd_log_rollsd <- rd_log_roll %>%
+  ggplot() +
+  geom_line(aes(date, log_ridership_sd)) +
+  geom_smooth(aes(date,log_ridership_sd),method='lm',se=F)+
+  theme_bw() +
+  ggtitle("Streetcar riders Standard Deviation over Time (Log)") +
+  ylab("Streetcar riders") +
+  xlab("Date")
+
+rd_log_rollsd
+```
+
+**Rolling SD of Box-Cox transformed timeseries**
+
+```{r}
+rd_box_cox_roll <- rd_trans %>%
+  mutate(box_cox_ridership_sd = slide_dbl(
+      ridership_boxcox, 
+      sd,
+      .before=12,
+      .after=12)
+  )
+
+rd_box_rollsd <- rd_box_cox_roll %>%
+  ggplot() +
+  geom_line(aes(date, box_cox_ridership_sd)) +
+  geom_smooth(aes(date,box_cox_ridership_sd),method='lm',se=F)+
+  theme_bw() +
+  ggtitle("Streetcar riders Standard Deviation over Time (Box Cox)") +
+  ylab("Streetcar riders") +
+  xlab("Date")
+
+rd_box_rollsd
+```
+
+Looking at the rolling sds of both the transformed timeseries, Log transformation method has reduced variance more than that of Box-Cox Transformation.\
+We will go ahead with the Log transformation.
+
+We will check for seasonality in the data.
+
+```{r}
+rd_train %>%
+  gg_tsdisplay(ridership,plot_type='partial', lag=36) +
+  labs(title="Raw Data", y="")
+```
+
+The data has seasonality so we will do seasonal differencing.
+
+```{r}
+rd_train %>%
+  gg_tsdisplay(difference(log(ridership),12),
+               plot_type='partial', lag=24) +
+  labs(title="Seasonally differenced (log)", y="")
+```
+
+The data is mean stationary, so no need of standard differencing.
+
+Further, to see if there is mean stationarity, we will first see difference of log values.
+
+```{r}
+rd_diff <- rd_trans %>%
+  mutate(ridership_diff = ridership_log - lag(ridership_log)) %>%
+  as_tsibble(index=date)
+
+rd_diff <- rd_diff %>%
+  mutate(date = as.Date(date))
+
+rd_diff %>%
+  ggplot() +
+  geom_line(aes(date, ridership_diff)) +
+  theme_bw() +
+  ggtitle("Streetcar Riders over Time - Log; First Difference") +
+  ylab("Log Transformed Differenced Streetcar Riders") +
+  xlab("Date") +
+  scale_x_date(date_breaks = "1 years", date_labels = "%Y") +
+  theme_bw()
+
+```
+
+Looking at the graph, we can see that the timeseries is almost mean stationary.
+
+So, now we'll conduct KPSS test for stationarity.
+
+```{r}
+#KPSS test for raw data
+raw_value_kpss <- rd_tsbl %>% 
+features(ridership, unitroot_kpss)
+raw_value_kpss
+```
+
+**KPSS test for Log transformed data**
+
+```{r}
+#KPSS test for Log transformed data
+log_trans_value_kpss <- rd_trans %>% 
+features(ridership_log, unitroot_kpss)
+log_trans_value_kpss
+
+```
+
+**KPSS test for Box Cox transformed data**
+
+```{r}
+#KPSS test for Box Cox transformed data
+box_cox_trans_value_kpss <- rd_trans %>% 
+features(ridership_boxcox, unitroot_kpss)
+box_cox_trans_value_kpss
+```
+
+**KPSS test for differenced log transformed data**
+
+```{r}
+#KPSS test for differenced log transformed data
+log_diff_value_kpss <- rd_diff %>%
+features(ridership_diff, unitroot_kpss)
+log_diff_value_kpss
+```
+
+The KPSS test for differenced log transformed data suggests that the data is mean stationary and its also visible from the graph above.
+
+## Examination of ACF/PACF
+
+**ACF and PACF plots.**
+
+```{r}
+rd_diff %>%
+  gg_tsdisplay(ridership_diff, plot_type = 'partial', lag_max = 18 )
+```
+
+After analyzing the ACF and PACF plots, it appears that the time series follows a moving average (MA) mmodel and auto regressive (AR) model. The ACF plot shows no damping effect, indicating a possible MA model. Furthermore, the PACF plot exhibits significant lag values at lag 1, suggesting an MA model of order 1.
+
+Based on these findings, the time series can be represented by an ARIMA(1,1,1) model, indicating a bit autoregressive (AR) component, first-order differencing (d=1), and a moving average component of order 1 (q=1). Since there's is evidence of seasonality in the data, the seasonal component (P, D, Q) is assumed to be (0,1,0).
+
+## ARIMA Model selection.
+
+Let's build some models and compare them based on the BIC values.
+
+```{r}
+models_bic <- rd_trans %>%
+  model(
+    mod1 = ARIMA(log(ridership)~pdq(1,1,3)+PDQ(0,1,0)),
+    mod2 = ARIMA(log(ridership)~pdq(0,1,3)+PDQ(1,0,0)),
+    mod3 = ARIMA(log(ridership)~pdq(1,1,1)+PDQ(0,1,0)),
+    mod4 = ARIMA(log(ridership)~pdq(1,1,2)+PDQ(0,1,0)),
+    mod5 = ARIMA(log(ridership)~pdq(2,1,2)+PDQ(0,1,0))
+    
+  )
+
+models_bic %>%
+  glance() %>%
+  arrange(BIC)
+```
+
+Based on the BIC values above, model 3 ARIMA(1,1,1)(0,1,0) seems to be the best one.\
+It's close to what we have predicted above based on the ACF and PACF plots.
+
+Let's check what **Auto ARIMA** gives us.
+
+```{r}
+best_model <- rd_train %>% 
+  model(   
+    ARIMA(log(ridership),approximation=F,stepwise = F) ) %>% 
+  report()
+```
+
+Its giving us ARIMA(1,1,1)(0,1,0) - what we predicted as it has AR(1), I(1), MA(1) and PDQ of (0,1,0)\
+It tells us that the time series is dependent on the previous lag as well. In summary, the ARIMA(1,1,1)(0,1,0) model suggests that the time series is dependent on both its own lagged values and the errors of the one preceding observation and the seasonal difference.
+
+**Fitted values plotted against the observed values of the series**
+
+```{r}
+fitted <- best_model %>%
+  augment() %>%
+  .$.fitted
+
+ggplot() +
+  geom_line(aes(rd_train$date, rd_train$ridership)) +
+  geom_line(aes(rd_train$date, fitted), color = "blue", alpha = 0.4) +
+  theme_bw() +
+  xlab("Date") +
+  ylab("Ridership Count")
+
+```
+
+Yes, the in-sample predicted values tend to follow the trends in the data accurately.
+
+## Analysis of Residuals
+
+```{r}
+best_model %>%
+  gg_tsresiduals()
+```
+
+There is no pattern observed in the ACF plot, and the histogram also appears to be normally distributed indicating no unusual pattern which tells us that there might be no correlation between the residuals of the best model. To confirm it we will conduct the Box-Ljung test.
+
+**Box-Ljung Test**
+
+```{r}
+best_model %>%
+  augment() %>%
+  features(.innov,ljung_box,lag = 10, dof = 4)
+```
+
+The p value here is \> 0.05. It indicates that there is no autocorrelation between residuals of the best model. The residuals appear to be white noise.
+
+# Section 3
+
+## Fitting Prophet Model
+
+```{r}
+rd_train %>%
+    model(prophet = prophet(ridership)) %>%
+    forecast(h=36)%>%
+    autoplot(rd_train %>% bind_rows(rd_test))+
+    ylab('Ridership Rate') +
+    xlab('Week') +
+    theme_bw()
+```
+
+## Decomposition of Elements
+
+```{r}
+model = rd_train %>%
+    model(prophet = fable.prophet::prophet(ridership))
+
+model %>%
+components() %>%
+autoplot()
+```
+
+## Assessment of Changepoints
+
+**Changepoints identified**
+
+```{r}
+changepoints = model %>%
+glance() %>%
+pull(changepoints) %>%
+bind_rows() %>%
+.$changepoints
+
+rd_train %>%
+ggplot()+
+geom_line(aes(date,ridership))+
+# geom_vline(aes(xintercept=ymd('2000-01-01')))
+geom_vline(xintercept=as.Date(changepoints),color='red',linetype='dashed')
+```
+
+The above graph shows the changepoints identified by Facebook Prophet in streetcar ridership data. These changepoints divide the time series into segments with distinct trends, potentially reflecting seasonal patterns or external events.
+
+These are some observations that were derived from the graph.
+
+-   **Seasonality:** The changepoints roughly align with potential seasonal variations, with potential drops around winter and peaks in summer. However, further analysis is needed to confirm this.
+
+-   **Upward trend:** There's a general upward trend in ridership across the entire period, but there are also fluctuations and some segments with different slopes.
+
+-   **Changepoint distribution:** The changepoints are somewhat evenly distributed throughout the time series, suggesting Prophet might have captured potential shifts in trends.
+
+No major changes detected, so no need to change the hyper parameters.
+
+## Detection of Saturation Point.
+
+```{r}
+rd_train %>%
+    model(
+        prophet_orig = fable.prophet::prophet(ridership)
+        ) %>%
+    forecast(h=730) %>%
+    autoplot(rd_train)
+```
+
+**Specifying Saturation Point**
+
+```{r}
+rd_train %>%
+    model(
+        prophet_orig = fable.prophet::prophet(ridership),
+        prophet_saturating = fable.prophet::prophet(ridership~growth(type='linear')+season('year'))
+        ) %>%
+    forecast(h=108) %>%
+    autoplot(rd_train %>%
+    filter(year(date) >= 2021),level=NULL)
+```
+
+```{r}
+rd_train %>%
+    model(
+        prophet_orig = fable.prophet::prophet(ridership),
+        prophet_saturating = fable.prophet::prophet(ridership~growth(type='logistic',capacity=2000,floor=0)+season('year'))
+        ) %>%
+    forecast(h=108) %>%
+    autoplot(rd_train %>%
+    filter(year(date) >= 2021),level=NULL)
+```
+
+The analysis of the time-series data revealed a clear linear trend rather than a logistic trend. This observation is supported by the graphical representation of the data, which demonstrates a consistent linear increase or decrease over time, without any evident saturation or leveling-off characteristic of a logistic trend.
+
+## Seasonality
+
+```{r}
+yearly_seasonality = model %>%
+components() %>%
+autoplot(yearly)
+
+yearly_seasonality 
+```
+
+```{r}
+model5 = rd_train %>%
+    model(
+      additive = fable.prophet::prophet(ridership~growth()+season(period='year',type='additive')+season(period='week')),
+      multiplicative = fable.prophet::prophet(ridership~growth()+season(period='year',type='multiplicative')+season(period='week')))
+
+model5 %>%
+components() %>%
+autoplot()
+```
+
+```{r}
+model5 %>%
+forecast(h=365) %>%
+autoplot(level=NULL)
+```
+
+The analysis of the time-series data has revealed a significant yearly seasonality pattern, characterized by a dip in activity during the winter months and an increase during the summer months. This seasonality is identified as additive, indicating that the seasonal fluctuations occur independently of the overall trend of the data. Given the yearly nature of the seasonality and its clear pattern without significant deviations, incorporating holidays into the model is deemed unnecessary. Therefore, the model is specified without including holiday effects.
+
+# Section 4
+
+## Model Evaluation
+
+**Cross Validation Scheme.\
+**I adjusted the initial value to 80 to cover roughly half of the dataset, and then incremented it by 6 for each subsequent step.
+
+```{r}
+rd_cv = rd_train %>%
+  stretch_tsibble(.init = 80, .step = 6)
+
+rd_cv %>%
+    ggplot()+
+    geom_point(aes(date,factor(.id),color=factor(.id)))+
+    ylab('Iteration')+
+    ggtitle('Samples included in each CV Iteration')
+```
+
+```{r}
+rd_cv_forecast = rd_cv %>%
+  model(
+    naive_w_drift = NAIVE(ridership~drift()),
+    best_arima = ARIMA(log(ridership)~pdq(1,1,3)+PDQ(0,0,0)),
+    prophet_model = prophet(ridership)) %>%
+  forecast(h = 6)
+
+rd_cv_forecast %>%
+  autoplot(rd_cv)+
+  facet_wrap(~.id,nrow=4)+
+  theme_bw()+
+  ylab('Streetcar Riders')
+```
+
+```{r}
+rd_cv_forecast %>%
+    as_tsibble() %>%
+    dplyr::select(-ridership) %>%
+    left_join(
+        rd_tsbl
+    ) %>%
+    ggplot()+
+    geom_line(aes(date,ridership))+
+    geom_line(aes(date,.mean,color=factor(.id),linetype=.model))+
+    scale_color_discrete(name='Iteration')+
+    theme_bw()
+```
+
+Based on the graph above, it seems that for the fifth iteration post January 2023, Prophet model appears to offer a better fit. I think comparatively Ptophet model offers a better fit.
+
+## Model Performance at each Horizon
+
+**Distribution of Absolute Error at each Horizon**
+
+```{r}
+rd_cv_forecast %>%
+  as_tibble() %>%
+  dplyr::select(-ridership) %>%
+  left_join(rd_tsbl) %>%
+  group_by(.id,.model) %>%
+  mutate(
+    weeks_ahead = seq(1:6)
+  ) %>%
+  ungroup() %>%
+  mutate(error = abs(ridership - .mean)) %>%
+  ggplot()+
+  geom_boxplot(aes(factor(weeks_ahead),error))+
+  geom_point(aes(factor(weeks_ahead),error,color=factor(.id)),alpha=0.4)+
+  facet_wrap(~.model,ncol=1)+
+  guides(color='none')+
+  ylab('Absolute Error')+
+  xlab('Weeks Ahead')+
+  ggtitle('Absolute Error by Iteration, ARIMA,NAIVE and PROPHET')
+```
+
+**RMSE at each Horizon**
+
+```{r}
+rd_cv_forecast %>%
+  as_tibble() %>%
+  dplyr::select(-ridership) %>%
+  left_join(rd_tsbl) %>% 
+  group_by(.id,.model) %>%
+  mutate(
+    weeks_ahead = seq(1:6)
+  ) %>%
+  ungroup() %>% 
+  filter(!is.na(ridership)) %>%
+  group_by(weeks_ahead,.model) %>%
+  summarize(
+    rmse = sqrt(mean((ridership - .mean)^2,na.rm=T)),
+  ) %>%
+  ungroup() %>%
+  ggplot()+
+  geom_line(aes(weeks_ahead,rmse,color=.model))+
+  xlab("Weeks Ahead")+
+  ylab("RMSE")
+```
+
+Observing the RMSE graph depicted above, it is evident that the Prophet model outperforms the other models.
+
+**Full Error Metrics by Iteration**
+
+```{r}
+rd_cv_forecast %>%
+  group_by(.id) %>%
+  accuracy(rd_tsbl) %>%
+  ungroup() %>%
+  data.table()
+```
+
+**Average Accuracy Comparison**
+
+```{r}
+rd_cv_forecast %>%
+  accuracy(rd_tsbl) %>%
+  data.table()
+```
+
+The lower the RMSE and MASE values, the better the model performance. By examining both metrics, it becomes apparent that the Prophet model is superior to the other models.
+
+```{r}
+rd_cv_forecast %>%
+  group_by(.id,.model) %>%
+  mutate(h = row_number()) %>%
+  ungroup() %>%
+  as_fable(response = "ridership", distribution = ridership) %>%
+  accuracy(rd_tsbl, by = c("h", ".model")) %>%
+  ggplot(aes(x = h, y = RMSE,color=.model)) +
+  geom_point()+
+  geom_line()+
+  ylab('Average RMSE at Forecasting Intervals')+
+  xlab('Months in the Future')
+```
+
+This graph also indicates that Prophet model is better.
+
+```{r}
+rd_cv_forecast %>%
+  group_by(.id,.model) %>%
+  mutate(h = row_number()) %>%
+  ungroup() %>%
+  as_fable(response = "ridership", distribution = ridership) %>%
+  accuracy(rd_tsbl, by = c("h", ".model")) %>%
+  mutate(MAPE = MAPE/100) %>% # Rescale
+  ggplot(aes(x = h, y = MAPE,color=.model)) +
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+  scale_y_continuous(
+    name = 'Average MAPE at Forecasting Intervals',labels=scales::percent)
+```
+
+After comparing the RMSE and MAPE plots shown above, it can be inferred that the Prophet forecast model performs better than best ARIMA for our time series forecasting. This aligns with our initial intuition.
+
+## Final Test Set Forecast
+
+```{r}
+rd_train_mod <- rd_train %>%
+  model(
+    prophet(ridership)
+  )
+```
+
+```{r}
+rd_train_mod %>%
+    forecast(h=36) %>%
+    autoplot(rd_train %>%
+    bind_rows(rd_test))+
+    ylab('Ridership Count')+
+    theme_bw()
+```
+
+```{r}
+rd_train_mod %>%
+    forecast(h=36) %>%
+    accuracy(rd_test)
+```
+
+Upon identifying the best-performing model, we proceeded to refit that model using the entire training set and generated forecasts for the test set. Subsequently, we visualized the actual versus predicted values for the test set and recalculated the performance metrics for this selected model.
+
+The model's performance on the test set was subpar. The RMSE on the training data set was 4870.58, while on the test data, it increased to 6608, indicating a significant increase in error. Additionally, the MAPE of 40.90% suggests that the model's forecasts deviate from the observed values by an average of 40.90%.
+
+These results indicate high variance in the data, suggesting overfitting. The model appears to be capturing noise from the training data rather than underlying patterns, leading to poor performance on unseen data. Therefore, there is considerable room for improvement.
+
+## Forecast for the Prophet Model
+
+```{r}
+rd_full_model <- rd_tsbl %>%
+  model(
+    prophet = fable.prophet::prophet(ridership~growth()+season(period='year', type = 'additive'))
+  )
+```
+
+```{r}
+rd_full_model %>%
+    forecast(h=52) %>%
+    autoplot(rd_tsbl) %>%+ 
+    ylab('Street Car Ridership')+
+    theme_bw()
+```
+
+he forecasted values appear to align well with the observed trend, indicating a consistent pattern where at the beginning of each year, there's a decline followed by a subsequent increase. This pattern suggests a recurring yearly cycle within the data, with the forecast capturing this trend effectively.
+
+In summary, the forecasted values reflect the expected behavior of the time series, showing a cyclic pattern characterized by a dip at the start of each year followed by a rise, which aligns with the observed trend in the data.
